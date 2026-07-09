@@ -1,0 +1,249 @@
+                                                                                            EKS
+                                                                                           #####
+
+Eks
+----
+
+--> prepare ec2 instance to use t3.micro and select key-pair you created before using RSA to ssh using MobaXterm
+--> this ec2 instance is EKS-Bootstrap-Server
+--> use Ubuntu image
+--> After ssh do these
+
+# sudo apt update
+# sudo apt upgrade -y
+# sudo vi /etc/hostname  or sudo hostnamectl set-hostname EKS-Bootstrap-Server
+# sudo reboot or sudo init 6  --> 6 in init or systemd (reboot.target) used to reboot your system
+
+# sudo su  --> to switch to root user
+# cd ~  --> to change directory to home 
+# pwd    --> you should found yourself {/root}
+
+## Install AWS Cli on the EC2
+Refer--https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+
+run these commands as root (sudo su , cd ~)  --> as i do these commands before, but i say it now for future installation to remember that
+$ curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+$ apt install unzip                  --> install unzip
+$ unzip awscliv2.zip                 --> prepare to use awscli
+$ sudo ./aws/install
+$ aws --version     or   $ /usr/local/bin/aws --version
+
+
+## Installing kubectl
+Refer--https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html
+
+run these commands as root (sudo su , cd ~) --> as i do these commands before, but i say it now for future installation to remember that
+$ curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.27.1/2023-04-19/bin/linux/amd64/kubectl
+$ ll or (ls) 
+$ chmod +x ./kubectl   --> Give executable permisions
+$ mv kubectl /bin    --> Because all our executable files are in /bin (The /bin directory is typically reserved for critical system binaries managed directly by your operating system's package manager)
+$ kubectl version --output=yaml
+
+
+## Installing  eksctl
+Refer--https://github.com/eksctl-io/eksctl/blob/main/README.md#installation
+$ curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+$ cd /tmp
+$ ll (ls)
+$ sudo mv /tmp/eksctl /bin   --> Because all our executable files are in /bin (The /bin directory is typically reserved for critical system binaries managed directly by your operating system's package manager)
+
+$ eksctl version
+
+
+--> create IAM role on aws to give or (attach) EKS-Bootstrap-Server instance role so i can create EKS cluster from that instance
+
+
+🛠️ Step 1: Create the Custom IAM Policy
+eksctl needs to create VPCs, CloudFormation stacks, IAM roles, EC2 custom instances, and the EKS cluster itself.
+
+Open the IAM Console.
+
+Go to Policies ➔ Create policy.
+
+Switch to the JSON tab and paste the following scoped-down policy (this grants everything eksctl needs without giving away your entire AWS account):
+
+JSON
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:*",
+                "ec2:*",
+                "iam:*",
+                "cloudformation:*",
+                "autoscaling:*",
+                "elasticloadbalancing:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+
+Click Next, name it EKS-Bootstrap-Policy, and click Create policy.
+
+
+👥 Step 2: Create the IAM Role for EC2
+Next, you need to wrap that policy into a role that an EC2 instance can assume.
+
+In the IAM Console, go to Roles ➔ Create role.
+
+For Trusted entity type, select AWS service.
+
+For Service or use case, select EC2 from the dropdown, then click Next.
+
+In the permissions search box, look for the policy you just created (EKS-Bootstrap-Policy) and check the box next to it.
+
+Click Next.
+
+Name the role (EKS-Bootstrap-Role) and click Create role.
+
+
+🖥️ Step 3: Attach the Role to your Bootstrap Instance
+Now, attach this role to your EKS-Bootstrap-Server instance as an Instance Profile.
+
+Open the EC2 Console and click on Instances.
+
+Select your EKS-Bootstrap-Server instance.
+
+Click on Actions ➔ Security ➔ Modify IAM role.
+
+Select EKS-Bootstrap-Role from the dropdown list.
+
+Click Update IAM role. 
+
+
+--> Note: The EKS-Bootstrap-Policy (which we created)
+The JSON policy we wrote defined exactly the services that the eksctl tool needs to build the cluster, which are:
+
+1- EKS: To create the cluster itself.
+
+2- EC2 & AutoScaling: To run the Worker Nodes (the node servers).
+
+3- VPC / Network: To create the internal network and subnets.
+
+4- CloudFormation: Because the eksctl tool uses it in the background to build the infrastructure.
+
+5- IAM: To create the specific roles for the nodes and the cluster.
+
+--> Note: giving instance administrative role is huge security risk because if your instance compromised the attacker will exploit this vulnerability to control and know your aws infrastructure and use it to destroy your infrastructure or know everything you have built, deployed, managed and can change your infrastructure or your cluster configurations
+
+
+
+## Setup Kubernetes using eksctl
+Refer--https://github.com/aws-samples/eks-workshop/issues/734
+
+$ eksctl create cluster --name zoz-cluster \
+--region eu-north-1 \
+--node-type t3.small \
+--nodes 3 \
+
+--> wait some time for building your cluster and then after finishing type this:
+
+$ kubectl get nodes
+
+
+- ArgoCD
+---------
+
+1 ) First, create a namespace
+    $ kubectl create namespace argocd
+    $ kubectl create namespace application    --> we will use this namespace for application deployment
+
+2 ) Next, let's apply the yaml configuration files for ArgoCd
+    $ kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+3 ) Now we can view the pods created in the ArgoCD namespace.
+    $ kubectl get pods -n argocd
+
+4 ) To interact with the API Server we need to deploy the CLI:
+    $ curl --silent --location -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v2.4.7/argocd-linux-amd64
+    $ chmod +x /usr/local/bin/argocd
+
+5 ) Expose argocd-server
+    $ kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'   --> this command creates a CLB which operates at layer 4 (ip address + port)
+
+6 ) Wait about 2 minutes for the LoadBalancer creation
+    $ kubectl get svc -n argocd
+
+7 ) Get pasword and decode it.
+    $ kubectl get secret argocd-initial-admin-secret -n argocd -o yaml
+    $ echo WXVpLUg2LWxoWjRkSHFmSA== (o/p of password in secret file) | base64 --decode   --> to place the decoded password in the argocd UI (should be decoded not encoded)
+
+--> copy the EXTERNAL-IP of argocd-server (DNS) that come from this command ($ kubectl get svc -n argocd) and paste in browser to open argocd then click on proceed to open argocd UI
+
+- name: admin
+- password: the o/p of decode command ( $ echo WXVpLUg2LWxoWjRkSHFmSA== (o/p of password in secret file) | base64 --decode)
+
+--> after logging into argocd UI go to user info and press update password to change your password to something you know or memorized well 
+
+
+## Add EKS Cluster to ArgoCD
+9 ) login to ArgoCD from CLI
+    $ argocd login a2255bb2bb33f438d9addf8840d294c5-785887595.ap-south-1.elb.amazonaws.com ( copy the EXTERNAL-IP of argocd-server (DNS) that come from this command ($ kubectl get svc -n argocd) ) --username admin
+
+--> place your new password when it shows up on screen
+--> if you go to argocd UI and press settings then Clusters, you will see the default cluster of argocd
+
+10 ) list clusters (it will be the default cluster of argocd, there is no cluster attached yet)
+     $ argocd cluster list
+
+11 ) Below command will show the EKS cluster
+     $ kubectl config get-contexts
+
+12 ) Add above EKS cluster to ArgoCD with below command
+     $ argocd cluster add i-08b9d0ff0409f48e7@virtualtechbox-cluster.ap-south-1.eksctl.io (name of my cluster that you know from previous command)  --name virtualtechbox-eks-cluster (cluster name that you know from previous command)
+
+13 ) list clusters (it will show the default cluster and your added cluster to argocd)
+     $ argocd cluster list
+
+--> if you go to argocd UI and press settings then Clusters, you will see the default cluster of argocd and your added cluster
+
+
+- connect your application repo to argocd
+------------------------------------------
+
+--> go to Settings then Repositories
+
+- choose your connection method: VIA HTTPS
+- Type: git
+- Project: default
+- Repository URL: put your repository url of your repo
+- name (optional): put any name 
+- password (optional): put access token of your GitHub
+
+--> then click on connect
+--> you should see CONNECTION STATUS: Successful 
+
+
+- deploy application on EKS cluster connected by argocd
+--------------------------------------------------------
+
+--> go to Applications then click on NEW APP
+
+- repository name: your repo name
+- project name: default
+- SYNC POLICY: Automatic, then put check mark on PRUNE RESOURCES and SELF HEAL  --> Prune fixes drift caused by changing Git; Self Heal fixes drift caused by changing the cluster
+- SOURCE --> - Repository URL: your repo url  - Path: ./
+- DESTINATION --> - Cluster URL: choose your cluster from drop down menu  - Namespace: application
+- click on create
+- you should see Status: - Healthy  - Synced  and see other details also 
+
+--> go to EKS-Bootstrap-Server
+
+# kubectl get pods  --> you should see running pods on your cluster
+# kubectl get svc   -->  you should see your service on your cluster and LoadBalancer that we created in previous then copy EXTERNAL-IP (DNS) of LoadBalancer and paste it on the browser with port 8080 because container running on this port, you should see your application (for this application after you put url with port and see the application add /webapp to url to see register page)
+
+--> if you go to argocd and press on created application, you will see graph for your deployment in the cluster
+
+- Cleanup cluster
+-----------------
+
+$ kubectl get all
+$ kubectl delete deployment.apps/virtualtechbox-regapp (deployment name)   --> it will delete the deployment
+$ kubectl delete service/virtualtechbox-service (service name)         --> it will delete the service
+$ eksctl delete cluster virtualtechbox --region ap-south-1  OR eksctl delete cluster --region=ap-south-1 --name=virtualtechbox-cluster (cluster name) --> it will delete the EKS cluster
+
+

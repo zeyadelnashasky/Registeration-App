@@ -1,0 +1,103 @@
+                                                                                      Docker
+                                                                                     ########
+
+--> i can use ECR also
+--> after installing docker plugins in Jenkins 
+
+--> go to credentials in manage Jenkins under security then system  (global) 
+- Kind: username and password
+- username: username of your dockerhub
+- Password: put your token that you created on dockerhub (on dockerhub go to account settings then security then press New Access Token)
+- ID: dockerhub
+- Description: dockerhub
+
+
+
+
+                                                                                        ECR
+                                                                                       #####
+
+
+--> Method 1: The Recommended & Secure Way (Using IAM Roles)
+
+If your Jenkins Agent is running inside AWS (for example, on an AWS EC2 instance), this is the cleanest and most secure approach.
+
+How it works: You do not store any credentials or passwords inside Jenkins. Instead, you attach an IAM Role directly to the EC2 instance hosting your Jenkins Agent. This role must have a policy attached allowing it to push images, such as AmazonEC2ContainerRegistryPowerUser.
+
+Why it's great: There are no hardcoded passwords or long-lived keys to rotate or manage. Jenkins relies entirely on the server's own identity to authenticate with AWS.
+
+Code Example for Method 1:
+Since AWS ECR login tokens expire every 12 hours, you fetch a temporary token on the fly using the AWS CLI:
+
+Groovy
+
+stage("Build & Push to AWS ECR") {
+    steps {
+        script {
+            def AWS_REGION   = "eu-north-1"
+            def AWS_ACCOUNT  = "123456789012" // Your AWS Account ID
+            def ECR_REGISTRY = "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            def REPO_NAME    = "register-app-pipeline"
+            def FULL_IMAGE   = "${ECR_REGISTRY}/${REPO_NAME}"
+
+            // 1. Build the Docker Image locally on the agent
+            docker_image = docker.build("${FULL_IMAGE}:${IMAGE_TAG}")
+
+            // 2. Authenticate with ECR using the Agent's attached IAM Role
+            sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+
+            // 3. Push the tags to ECR
+            sh "docker push ${FULL_IMAGE}:${IMAGE_TAG}"
+            sh "docker push ${FULL_IMAGE}:latest"
+        }
+    }
+}
+
+
+
+
+--> Method 2: The On-Premises / Hybrid Way (Using IAM User Keys)
+
+If your Jenkins Agent is running outside of AWS (like on a local bare-metal server, an on-premises VM, or a different cloud provider), it cannot use an IAM Role natively. It needs long-lived keys.
+
+How it works: You create an IAM User in the AWS Console with ECR push permissions. You then generate an AWS Access Key ID and an AWS Secret Access Key for this user.
+
+Jenkins Setup: You save these two keys inside the Jenkins Credentials Manager as an AWS Credentials type (which requires the Pipeline: AWS Steps plugin).
+
+In the Pipeline: You use a wrapper block to load those keys into the environment variables before running the Docker commands.
+
+Code Example for Method 2:
+
+Groovy
+
+stage("Build & Push to AWS ECR") {
+    steps {
+        script {
+            def AWS_REGION   = "eu-north-1"
+            def AWS_ACCOUNT  = "123456789012"
+            def ECR_REGISTRY = "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            def REPO_NAME    = "register-app-pipeline"
+            def FULL_IMAGE   = "${ECR_REGISTRY}/${REPO_NAME}"
+
+            docker_image = docker.build("${FULL_IMAGE}:${IMAGE_TAG}")
+
+            // Bind the AWS credentials stored in Jenkins safely to this block
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-ecr-user-creds']]) {
+                // The plugin automatically exposes AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY to the shell
+                sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                
+                sh "docker push ${FULL_IMAGE}:${IMAGE_TAG}"
+                sh "docker push ${FULL_IMAGE}:latest"
+            }
+        }
+    }
+}     
+
+
+
+# Note: The IAM Role is attached specifically to the Jenkins Agent because it used to run the workload, not the Master (unless the Master is acting as an Agent and running the build itself, which is a bad practice in Production).
+The reasoning behind this is the security principle of Least Privilege:
+
+--> The Agent is the "muscles" where the pipeline executes step-by-step. It is the one that needs to talk to the AWS API to perform the docker login and push the image to ECR. Therefore, it is the one that needs this role.
+
+--> The Master is simply the "brain" that manages the dashboard, schedules, and distributes jobs to the Agents. From a security standpoint, it is not in your best interest to grant it modification or upload permissions to the cloud since it isn't executing the build.   

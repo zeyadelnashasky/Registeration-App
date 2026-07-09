@@ -1,0 +1,200 @@
+                                                                                        SonarQube
+                                                                                       ###########
+SonarQube
+----------
+--> prepare ec2 instance with 15 GB disk, use t3.medium and select key-pair you created before using RSA to ssh using MobaXterm
+--> this ec2 instance is SonerQube
+--> use Ubuntu image
+--> After ssh do these
+
+# sudo apt update
+# sudo apt upgrade -y
+# sudo vi /etc/hostname  or sudo hostnamectl set-hostname SonarQube
+
+# sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'   --> Add PostgresSQL repository for Ubuntu
+# wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null                --> Add GPG key of the official PostgresSQL and save it on the machine
+
+# sudo apt update 
+# sudo apt-get -y install postgresql postgresql-contrib    --> install PostgresSQL with primary package (postgresql) to install Database Server and extra package (postgresql-contrib) for extensions, security and extra tools for code
+
+# sudo systemctl enable postgresql
+
+## Create Database for Sonarqube
+    $ sudo passwd postgres        --> put password for PostgresSQL and remember it
+    $ su - postgres               --> put password you created 
+    $ createuser sonar            --> create sonar user
+    $ psql                        --> go into the database shell
+    $ ALTER USER sonar WITH ENCRYPTED password 'sonar';       --> give sonar user a password (sonar) and it would be encrypted (you can put any password as you want but remember you will use it later when you update Sonarqube properties with DB credentials)
+
+    $ CREATE DATABASE sonarqube OWNER sonar;                  --> create database called sonarqube and owner of this database is soner user
+    $ grant all privileges on DATABASE sonarqube to sonar;    --> give all permissions on this database to sonar user
+    $ \q                                                      --> quit database shell
+    $ exit                                                    --> exit from postgres user you use to go into database 
+
+## Add Adoptium repository
+    $ sudo bash                                --> change the terminal to use root permissions directly and don't write sudo again (you will be inside /home/ubuntu)
+
+    $ wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | tee /etc/apt/keyrings/adoptium.asc 
+ 
+--> What it does: Downloads the official Adoptium security key and saves, it to a secure directory (/etc/apt/keyrings/). 
+--> Purpose: It allows your package manager (apt) to verify the authenticity and integrity of the Java packages you will download next.
+
+    $ echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb $(awk -F= '/^VERSION_CODENAME/{print$2}' /etc/os-release) main" | tee /etc/apt/sources.list.d/adoptium.list
+
+--> What it does: Dynamically detects your OS version codename and creates a dedicated repository file (adoptium.list).
+--> Purpose: It tells your system exactly where to find and pull the latest stable Eclipse Temurin Java (JDK) packages, explicitly linking them to the security key downloaded in the previous step.
+
+
+ ## Install Java 17
+    $ apt update
+    $ apt install temurin-17-jdk -y    or apt update && apt install openjdk-17-jdk -y 
+    $ update-alternatives --config java
+    $ /usr/bin/java --version
+    $ exit                                        --> exit from /home/ubuntu (bash)
+
+
+## Linux Kernel Tuning
+   # Increase Limits
+
+--> Linux Kernel Tuning for SonarQube
+
+The Problem: SonarQube uses Elasticsearch under the hood. Elasticsearch opens a massive number of system files and threads simultaneously. Linux's default limits are too low, which causes SonarQube to crash with "Too many open files" errors.
+
+    $ sudo vim /etc/security/limits.conf
+    //Paste the below values at the bottom of the file at # End of file
+    sonarqube   -   nofile   65536                                                            
+    sonarqube   -   nproc    4096                                                          
+
+--> The Solution: Modifying /etc/security/limits.conf raises these limits specifically for the sonarqube user.
+
+What the lines mean:
+sonarqube - nofile (number of opened files) 65536: Increases the maximum number of open files the user can handle at once to 65,536 (up from the default 1,024).
+sonarqube - nproc nproc (number of processes) 4096: Increases the maximum number of processes/threads the user can run at once to 4,096.
+
+
+# Increase Mapped Memory Regions
+    $ sudo vim /etc/sysctl.conf
+    //Paste the below values at the bottom of the file
+    vm.max_map_count = 262144
+
+--> vm.max_map_count = 262144: Increases the maximum number of Virtual Memory Areas (VMAs) a process can use to 262,144. This gives Elasticsearch enough virtual memory space to map its database files into RAM for fast searching.
+
+# sudo init 6
+OR
+# sudo sysctl -p   --> Changes saved in /etc/sysctl.conf are not applied automatically. To reload and activate the new limit immediately without rebooting
+
+--> in aws security group add rule to allow for port "9000" which SonarQube listen on   ***
+
+
+## Sonarqube Installation 
+   # Download and Extract
+     $ cd /tmp
+     $ sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.9.0.65466.zip
+     $ sudo apt install unzip -y                       --> install unzip to decompress installed SonarQube file
+     $ sudo mkdir -p /opt/sonarqube
+     $ sudo unzip sonarqube-*.zip 
+     $ sudo mv sonarqube-*/* /opt/sonarqube/
+     
+
+## Create user and set permissions                                           ----|
+     $ sudo groupadd sonar                                                       |
+     $ sudo useradd -c "user to run SonarQube" -d /opt/sonarqube -g sonar sonar  |--> all of that we needed to help us make SonarQube to act as a service later when we create sonar.service 
+     $ sudo chown sonar:sonar /opt/sonarqube -R                                  |                                          
+     $ sudo chmod 775 /opt/sonarqube -R                                      ----|
+
+## Update Sonarqube properties with DB credentials
+     $ sudo vim /opt/sonarqube/conf/sonar.properties
+     //Find and replace the below values, you might need to add the sonar.jdbc.url
+     sonar.jdbc.username=sonar                                                            --> username that you set in DB when you created  
+     sonar.jdbc.password=sonar                                                            --> password that you set in DB when you created
+     sonar.jdbc.url=jdbc:postgresql://localhost:5432/sonarqube                            --> Port 5432 is default network port used by PostgreSQL
+
+Note: Production Security Warning --> Since you are setting up SonarQube and PostgreSQL, never expose port 5432 to the public internet (0.0.0.0/0).
+If SonarQube and Postgres are on the same server: Keep PostgreSQL listening only on localhost (127.0.0.1).
+If they are on different servers (e.g., AWS EC2): Configure the PostgreSQL Security Group to allow inbound traffic on port 5432 only from that specific Security Group or specific private IP address of your SonarQube/Jenkins server.
+
+
+## Create service for SonarQube (make SonarQube act as a service)
+$ sudo vim /etc/systemd/system/sonar.service
+//Paste the below into the file
+     [Unit]
+     Description=SonarQube service
+     After=syslog.target network.target
+
+     [Service]
+     Type=forking
+
+     ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+     ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+
+     User=sonar
+     Group=sonar
+     Restart=always
+
+     LimitNOFILE=65536
+     LimitNPROC=4096
+
+     [Install]
+     WantedBy=multi-user.target
+
+## Start Sonarqube and Enable service
+     $ sudo systemctl start sonar
+     $ sudo systemctl enable sonar
+     $ sudo systemctl status sonar
+
+
+## Watch log files and monitor for startup
+     $ sudo tail -f /opt/sonarqube/logs/sonar.log
+
+--> now you can copy public ip address of the SonarQube machine and port to go into SonarQube {public_ip_address:9000} --> username: admin and password: admin , then put the old password: admin
+and put new password: any password you want 
+
+
+Integrate SonarQube with Jenkins
+---------------------------------
+
+--> at SonarQube web page go to My Account then Security 
+
+- name: jenkins-sonarqube-token 
+- type: global analysis token
+- Expires in: put any time you want or put No expiration
+- press generate then copy the generated token then go to Jenkins
+
+--> at Jenkins go to manage Jenkins then credentials under security and store token at system  (global) and choose secret text
+
+- kind: Secret text
+- Secret: paste the copied token
+- ID: jenkins-sonarqube-token
+- Description: jenkins-sonarqube-token
+
+--> go to system under System configuration then click on add SonarQube 
+
+- name: sonarqube-server
+- Server url: http://private_ip(sonarqube):9000
+- Server authentication token: jenkins-sonarqube-token  --> then apply and save
+
+--> Note: if any security risks appear when you install SonarQube plugins go security logo that appear red warning and choose configure which of these warnings are shown then under Hidden security warnings remove check marks of Security warnings then apply and save 
+
+
+--> go to manage Jenkins then tools under System configuration and go down to SonarQube Scanner installations then press add SonarQube Scanner
+
+- name: sonarqube-scanner
+- leave check mark the same of Install automatically then click apply and save
+
+--> now we have to create webhook to trigger pipeline automatically, so go to SonarQube web page then go to Administration then press Configuration drop menu and choose Webhooks then press create 
+
+- name: sonarqube-webhook (name for webhook to trigger Jenkins pipeline when it runs to analyzes for bugs, vulnerabilities, and code smells in pipelines)
+- URL : http://private_ip_address_of_jenkins_master:8080/sonarqube-webhook/  --> then click on create  
+
+--> you will see any result for SonarQube under Projects in SonarQube web page
+
+
+- install git
+-------------
+
+# sudo apt update
+# sudo apt install git -y
+# git --version
+# git config --global user.name "Your Name"            --> Once Git is installed, you must configure your global identity. This information is embedded directly into every commit you make
+# git config --global user.email "your.email@example.com"  --> global identity
+# git config --list    --> to verify that your global configurations were saved properly

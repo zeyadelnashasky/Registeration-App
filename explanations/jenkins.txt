@@ -1,0 +1,216 @@
+                                                                                           Jenkins
+                                                                                         ###########
+
+Jenkins-Master
+---------------
+--> prepare ec2 instance with EBS has 15 GB disk, use t3.micro and create key using RSA to ssh later MobaXterm
+--> this ec2 instance is Jenkins-Master
+--> use Ubuntu image
+--> After ssh do these
+
+# sudo apt update
+# sudo apt upgrade -y
+# sudo vi /etc/hostname  or sudo hostnamectl set-hostname Jenkins-Master   --> Jenkins-Master
+# sudo reboot or sudo init 6  --> 6 in init or systemd (reboot.target) used to reboot your system      --> init (old version) & systemd (new version)
+
+--> in aws security group add rule to allow for port "8080" which Jenkins listen on   ***
+
+# sudo apt install -y openjdk-17-jre         --> to install Java
+# java --version                             --> to see java version
+
+--> to download Jenkins, go to [Jenkins.io/doc/book/installing/linux]  --> search for Debian/Ubuntu weekly release command and copy it to your terminal to download (be careful because it is downloading new jenkins version that is compatible only with java21 and higher and it causes problem to activate jenkins)
+
+# sudo systemctl enable --now jenkins  --> enable & start in one command
+# sudo systemctl status Jenkins
+# sudo vi /etc/ssh/sshd_config      --> uncomment PubkeyAuthentication  yes    --> uncomment AuthorizedKeysFile
+
+--> PubkeyAuthentication yes: Enables the server to accept SSH keys for logging in, which is significantly more secure than passwords.
+--> AuthorizedKeysFile .ssh/authorized_keys: Tells the SSH server the exact folder and file path inside a user's home directory where it must look to verify those allowed SSH public keys.
+--> this used to make Jenkins-Master to talk with Jenkins-Agent by using ssh protocol on port 22, so Jenkins-Master can give Jenkins-Agent the instructions or commands to process the commands
+
+--> Note: Jenkins-Master: brain (Master)   /  Jenkins-Agent: run workload (Worker)
+--> Note: you open and manage jenkins UI using Jenkins-Master public ip to give the instructions that i want, but behind the scenes the workload of these instructions run on Jenkins-Agent
+
+# sudo systemctl reload sshd    --> Always use "reload" for configuration updates and Only use "restart" if you are upgrading the SSH package or changing network ports/sockets that require a full process reset
+
+# ssh-keygen
+# cd .ssh      
+# cat id_ed25519.pub   --> copy the content file of "id_ed25519.pub" in Jenkins-Master and go to /.ssh/authorized_keys and paste the content in this file below the exist key in Jenkins-Agent
+
+
+Jenkins-Agent
+--------------
+--> prepare ec2 instance with 15 GB disk, use t3.micro and select key-pair you created before using RSA to ssh using MobaXterm
+--> this ec2 instance is Jenkins-Agent
+--> use Ubuntu image
+--> After ssh do these
+
+# sudo apt update
+# sudo apt upgrade -y
+# sudo vi /etc/hostname  or sudo hostnamectl set-hostname Jenkins-Agent  --> Jenkins-Agent
+# sudo reboot or sudo init 6  --> 6 in init or systemd (reboot.target) used to reboot your system   --> init (old version) & systemd (new version)  
+
+# sudo apt install -y openjdk-17-jre       --> used to install Java
+# java --version                           --> to see java version
+
+# sudo apt-get install docker.io -y
+# sudo usermod -aG docker $USER      --> "In Linux, the $USER is environment variable acts just like saying 'me', it is a dynamic shortcut that automatically replaces itself with your current username so you don't have to type it manually, while sudo ensures the command remains strictly protected by your password."
+
+# sudo reboot or sudo init 6         --> 6 in init or systemd (reboot.target) used to reboot your system      --> init (old version) & systemd (new version)
+# sudo vi /etc/ssh/sshd_config       --> uncomment PubkeyAuthentication  yes    --> uncomment AuthorizedKeysFile
+
+--> PubkeyAuthentication yes: Enables the server to accept SSH keys for logging in, which is significantly more secure than passwords.
+--> AuthorizedKeysFile .ssh/authorized_keys: Tells the SSH server the exact folder and file path inside a user's home directory where it must look to verify those allowed SSH public keys.
+
+# sudo systemctl reload sshd    --> Always use "reload" for configuration updates and Only use "restart" if you are upgrading the SSH package or changing network ports/sockets that require a full process reset
+
+--> look to the last command in Jenkins-Master
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--> now you can copy public ip address of Jenkins-Master and paste it in the browser with port 8080 --> "public-ip:8080"
+--> copy the administration password from /var/lib/Jenkins/secrets/initialAdminPassword and paste it on the browser
+--> install suggested plugins
+--> set username, password, and E-mail address
+--> go to manage Jenkins and under system configuration go to nodes and press built-in node and then press configure on the left and set number of executers to zero then save
+--> again, go to manage Jenkins and under system configuration go to nodes and press new node and write the name of 'Jenkins-Agent' and press permanently agent then create then put number of executers to 2 and put remote root directory '/home/ubuntu' of Jenkins-Agent and for labels put 'Jenkins-Agent' and for launch method select launch agents via SSH and put host = private ip address of Jenkins-Agent (because they are in the same vpc if different vpc put public ip address) and for credentials (we don't have) so click on add then choose SSH Username with private key and for ID, description put 'Jenkins-Agent' and for username put 'ubuntu' and go to Jenkins-Master to copy the content of 'id_ed25519' (private key) and paste the content in private key part then click on add and then go to credentials so you can choose new credentials that you have created
+
+--> choose Non verifying Verification Strategy 
+--> then you can click on save 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+plugins to install
+-------------------
+--> Blue Ocean --> It provides a modern, visual UI for Jenkins Pipelines, showing your build stages as a clean flowchart
+--> Maven Integration & Pipeline Maven Integration  --> package manager and build automation tool for Java
+--> Eclipse Temurin installer --> open-source build of OpenJDK provided by the Adoptium working group (backed by Red Hat, IBM, Microsoft, and others). It is the standard production-ready JDK for running Java applications, including Maven builds or Jenkins controllers
+
+--> SonarQube Scanner --> analyzes code from bugs, vulnerabilities, and code smells.
+--> Sonar Quality Gates --> related to sonarqube 
+
+--> Docker - Docker Pipeline - Docker API - Docker Commons - docker-build-step - CloudBees Docker Build and Publish
+--> Email Extension    --> for sending E-mail to my G-mail if the pipeline run correct or failed
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--> go to tools under system configuration --> ADD JDK and put name for JDK (jdk-17) and mark on install automatically and be sure this name will be called in pipeline as you mentioned it exactly and choose adoptium.net and choose JDK version of jdk-17.0.5+8, also add maven and put name for maven (maven) and be sure this name will be called in pipeline as you mentioned it exactly
+
+-->  go to credentials under security --> press add credentials then add username of your gitHub account and the password by creating classic token on gitHub and place it into the password space and for ID, decribtion put "gitHub" then click on create
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Pipeline
+--------
+
+pipeline {
+    agent { label 'Jenkins-Agent' }
+    
+    tools {
+        jdk 'jdk-17'
+        maven 'maven'
+    }
+  
+    environment {
+        APP_NAME          = "register-app"
+        RELEASE           = "1.0.0"
+        IMAGE_NAME        = "zeyadelnashashky/${APP_NAME}"
+        IMAGE_TAG         = "${RELEASE}-${BUILD_NUMBER}"
+        
+        DOCKER_CREDS_ID   = 'dockerhub'
+        SONAR_CREDS_ID    = 'jenkins-sonarqube-token'
+        GITHUB_CREDS_ID   = 'github'
+    }
+    
+    stages {
+        stage("Cleanup Workspace") {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage("Checkout from SCM") {
+            steps {
+                git branch: 'main', credentialsId: "${GITHUB_CREDS_ID}", url: 'https://github.com/zeyadelnashasky/register-app'
+            }
+        }
+
+        stage("Build & Test Application") {
+            steps {
+                sh "mvn clean package"
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                script {
+                    withSonarQubeEnv(credentialsId: "${SONAR_CREDS_ID}") { 
+                        sh "mvn sonar:sonar"
+                    }
+                }   
+            }
+        }
+
+        stage("Quality Gate") {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_CREDS_ID}"
+                }   
+            }
+        }
+
+        stage("Build & Push Docker Image") {
+            steps {
+                script {
+                    docker.withRegistry('', "${DOCKER_CREDS_ID}") {
+                        def docker_image = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
+                        docker_image.push()
+                        docker_image.push('latest')
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan") {
+            steps {
+                script {
+                    sh "docker run --rm aquasec/trivy image --no-progress --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --format table ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Cleanup Local Images') {
+            steps {
+                script {
+                    sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
+                    sh "docker rmi ${IMAGE_NAME}:latest || true"
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            emailext body: """
+                <h2>❌ Jenkins Pipeline Failed!</h2>
+                <p><b>Job Name:</b> ${env.JOB_NAME}</p>
+                <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
+                <p><b>Status:</b> <span style="color: red; font-weight: bold;">FAILED</span></p>
+                <p>Check the Jenkins console output to debug the error: <a href="${env.BUILD_URL}">Console Output</a></p>
+            """, 
+            subject: "🚨 ${env.JOB_NAME} - Build # ${env.BUILD_NUMBER} - Failed", 
+            mimeType: 'text/html', 
+            to: "zeyadmoustafa732@gmail.com"
+        }
+        
+        success {
+            emailext body: """
+                <h2>✅ Jenkins Pipeline Successful!</h2>
+                <p><b>Job Name:</b> ${env.JOB_NAME}</p>
+                <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
+                <p><b>Status:</b> <span style="color: green; font-weight: bold;">SUCCESSFUL</span></p>
+                <p>You can view the build details here: <a href="${env.BUILD_URL}">Build Link</a></p>
+            """, 
+            subject: "🎉 ${env.JOB_NAME} - Build # ${env.BUILD_NUMBER} - Successful", 
+            mimeType: 'text/html', 
+            to: "zeyadmoustafa732@gmail.com"
+        }      
+    }
+}
