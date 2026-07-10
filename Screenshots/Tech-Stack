@@ -1,0 +1,9 @@
+- Developer push the code to github
+- Jenkins (CI/CD)
+- Maven
+- SAST (SonarQube)
+- Docker
+- Image scanner (Trivy)
+- ArgoCD (Continous deployment)
+- EKS (Kubernetes)
+- Slack (Recieve Notifications)
